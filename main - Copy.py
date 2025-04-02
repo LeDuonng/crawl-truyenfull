@@ -6,137 +6,6 @@ import os
 import concurrent.futures
 import time
 from pathlib import Path
-import logging
-from datetime import datetime
-
-def setup_logging(story_name):
-    """Thiết lập logging cho quá trình crawl"""
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    
-    log_file = log_dir / f"{story_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler()
-        ]
-    )
-    return logging.getLogger(__name__)
-
-def get_last_chapter(base_url, logger):
-    """Tìm chương cuối cùng của truyện"""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        response = requests.get(base_url, headers=headers, verify=False, timeout=30)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Tìm link cuối theo nhiều cách
-            last_page_links = []
-            
-            # Cách 1: Tìm theo string chứa "Cuối"
-            try:
-                last_page_link = soup.find('a', string=lambda t: t and 'Cuối' in t)
-                if last_page_link:
-                    last_page_links.append(last_page_link)
-            except Exception as e:
-                logger.warning(f"Lỗi khi tìm link 'Cuối' theo cách 1: {e}")
-            
-            # Cách 2: Tìm theo title chứa "Cuối"
-            try:
-                last_page_link = soup.find('a', title=lambda t: t and 'Cuối' in t)
-                if last_page_link:
-                    last_page_links.append(last_page_link)
-            except Exception as e:
-                logger.warning(f"Lỗi khi tìm link 'Cuối' theo cách 2: {e}")
-            
-            # Cách 3: Tìm theo class "last"
-            try:
-                last_page_link = soup.find('a', class_='last')
-                if last_page_link:
-                    last_page_links.append(last_page_link)
-            except Exception as e:
-                logger.warning(f"Lỗi khi tìm link 'Cuối' theo cách 3: {e}")
-                
-            # Cách 4: Tìm theo span.arrow
-            try:
-                arrow_spans = soup.find_all('span', class_='arrow')
-                for span in arrow_spans:
-                    if span.get_text() == '»' and span.parent.name == 'a':
-                        last_page_links.append(span.parent)
-                        break
-            except Exception as e:
-                logger.warning(f"Lỗi khi tìm link 'Cuối' theo cách 4: {e}")
-                
-            # Cách 5: Tìm link phân trang có số trang lớn nhất
-            try:
-                # Tìm tất cả link phân trang theo pattern trang-X
-                pagination_links = soup.find_all('a', href=re.compile(r'/trang-\d+/'))
-                if pagination_links:
-                    # Lấy số trang từ mỗi link
-                    max_page = 0
-                    max_page_link = None
-                    for link in pagination_links:
-                        href = link.get('href', '')
-                        page_match = re.search(r'/trang-(\d+)/', href)
-                        if page_match:
-                            page_num = int(page_match.group(1))
-                            if page_num > max_page:
-                                max_page = page_num
-                                max_page_link = link
-                    
-                    if max_page_link:
-                        logger.info(f"Tìm thấy trang cuối từ phân trang: trang-{max_page}")
-                        last_page_links.append(max_page_link)
-            except Exception as e:
-                logger.warning(f"Lỗi khi tìm link phân trang: {e}")
-            
-            # Xử lý các link tìm được
-            for last_page_link in last_page_links:
-                last_page_url = last_page_link.get('href')
-                if last_page_url:
-                    logger.info(f"Tìm thấy link trang cuối: {last_page_url}")
-                    # Truy cập trang cuối
-                    last_page_response = requests.get(last_page_url, headers=headers, verify=False, timeout=30)
-                    if last_page_response.status_code == 200:
-                        last_page_soup = BeautifulSoup(last_page_response.content, 'html.parser')
-                        
-                        # Tìm chương cuối trong trang cuối
-                        chapter_links = last_page_soup.find_all('a', href=re.compile(r'chuong-\d+'))
-                        if chapter_links:
-                            logger.info(f"Số link chương tìm thấy trong trang cuối: {len(chapter_links)}")
-                            last_chapter_url = chapter_links[-1].get('href')
-                            logger.info(f"URL chương cuối: {last_chapter_url}")
-                            chapter_match = re.search(r'chuong-(\d+)', last_chapter_url)
-                            if chapter_match:
-                                last_chapter_number = int(chapter_match.group(1))
-                                logger.info(f"Tìm thấy chương cuối từ trang cuối: {last_chapter_number}")
-                                return last_chapter_number
-                    else:
-                        logger.warning(f"Không thể truy cập trang cuối: {last_page_url}, mã lỗi: {last_page_response.status_code}")
-            
-            # Nếu không tìm thấy link "Cuối", tìm trong danh sách chương
-            chapter_list = soup.find_all('a', href=re.compile(r'chuong-\d+'))
-            if chapter_list:
-                last_chapter_url = chapter_list[-1].get('href')
-                chapter_match = re.search(r'chuong-(\d+)', last_chapter_url)
-                if chapter_match:
-                    last_chapter_number = int(chapter_match.group(1))
-                    logger.info(f"Tìm thấy chương cuối từ danh sách: {last_chapter_number}")
-                    return last_chapter_number
-        
-        logger.error(f"Không thể truy cập trang chủ: {base_url}")
-        return None
-        
-    except Exception as e:
-        logger.error(f"Lỗi khi tìm chương cuối: {str(e)}")
-        return None
 
 def get_chapter_content(url, max_retries=3):
     for attempt in range(max_retries):
@@ -274,29 +143,16 @@ def fetch_chapter(chapter_number, base_url):
     return (chapter_number, content)
 
 def crawl_story(base_url, batch_size=10, max_workers=5):
-    # Lấy tên truyện từ URL
-    story_name = base_url.split('/')[-2].replace('-', '_')
-    
-    # Thiết lập logging
-    logger = setup_logging(story_name)
-    logger.info(f"Bắt đầu crawl truyện: {base_url}")
-    
-    # Tìm chương cuối
-    last_chapter = get_last_chapter(base_url, logger)
-    if not last_chapter:
-        logger.error("Không tìm thấy chương cuối, dừng crawl")
-        return []
-    
     chapters = []
     chapter_number = 1
-    consecutive_empty = 0
-    max_consecutive_empty = 3
+    consecutive_empty = 0  # Đếm số chương trống liên tiếp
+    max_consecutive_empty = 3  # Số chương trống tối đa liên tiếp
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        while chapter_number <= last_chapter:
+        while True:
             future_to_chapter = {
                 executor.submit(fetch_chapter, chap, base_url): chap 
-                for chap in range(chapter_number, min(chapter_number + batch_size, last_chapter + 1))
+                for chap in range(chapter_number, chapter_number + batch_size)
             }
             batch_results = {}
             for future in concurrent.futures.as_completed(future_to_chapter):
@@ -306,37 +162,36 @@ def crawl_story(base_url, batch_size=10, max_workers=5):
                     content = result[1]
                     batch_results[chap_num] = content
                     
+                    # Xử lý nội dung trước khi lưu
                     if content and content not in ["Chương trống", "Không tìm thấy nội dung", "Lỗi 503", "Lỗi 404", "Lỗi không xác định"]:
                         content = clean_text(content)
                         batch_results[chap_num] = content
-                        consecutive_empty = 0
-                        logger.info(f"Đã crawl thành công chương {chap_num}")
+                        consecutive_empty = 0  # Reset đếm chương trống
                     else:
                         consecutive_empty += 1
-                        logger.warning(f"Chương {chap_num}: {content}")
+                        print(f"Chương {chap_num}: {content}")
                         
                 except Exception as e:
-                    logger.error(f"Lỗi với chương {chap_num}: {str(e)}")
+                    print(f"Lỗi với chương {chap_num}: {e}")
                     batch_results[chap_num] = f"Lỗi: {str(e)}"
                     consecutive_empty += 1
             
-            for chap in range(chapter_number, min(chapter_number + batch_size, last_chapter + 1)):
+            # Xử lý kết quả của batch
+            for chap in range(chapter_number, chapter_number + batch_size):
                 content = batch_results.get(chap)
                 if content:
                     chapters.append((chap, content))
                 
+                # Kiểm tra điều kiện dừng
                 if consecutive_empty >= max_consecutive_empty:
-                    logger.warning(f"Đã gặp {max_consecutive_empty} chương trống liên tiếp. Dừng crawl.")
+                    print(f"Đã gặp {max_consecutive_empty} chương trống liên tiếp. Dừng crawl.")
                     return chapters
                     
             chapter_number += batch_size
+            
+            # Thêm delay giữa các batch để tránh bị block
             time.sleep(2)
             
-    # Trước khi return chapters
-    missing_chapters = set(range(1, last_chapter + 1)) - set(chap for chap, _ in chapters)
-    logger.info(f"Các chương bị bỏ qua: {sorted(missing_chapters)}")
-    
-    logger.info(f"Hoàn thành crawl {len(chapters)} chương")
     return chapters
 
 def create_story_directory(story_name):
@@ -403,16 +258,8 @@ def create_word_doc(chapters, story_dir):
         print(f"Lỗi khi lưu file Word: {e}")
         raise
 
-# Thêm hàm tắt cảnh báo SSL
-def disable_ssl_warnings():
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 if __name__ == "__main__":
     import sys
-    
-    # Tắt cảnh báo SSL
-    disable_ssl_warnings()
     
     if len(sys.argv) > 1:
         base_url = sys.argv[1]
